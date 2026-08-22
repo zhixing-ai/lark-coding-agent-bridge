@@ -2,6 +2,7 @@ import type { AgentEvent } from '../agent/types';
 import type { CotMessagesMode, TenantBrand } from '../config/schema';
 import { log } from '../core/logger';
 import { toolHeaderText } from '../card/tool-render';
+import { redactSensitiveText } from '../card/redact-sensitive';
 import type { RunState } from '../card/run-state';
 
 const ENDPOINTS: Record<TenantBrand, string> = {
@@ -310,7 +311,7 @@ export async function consumeCotEvents(
         if (detailed && evt.input !== undefined) {
           publisher.enqueue('TOOL_CALL_ARGS', {
             toolCallId,
-            delta: JSON.stringify(evt.input),
+            delta: redactSensitiveText(JSON.stringify(evt.input)),
           });
         }
         publisher.enqueue('TOOL_CALL_END', { toolCallId });
@@ -324,7 +325,7 @@ export async function consumeCotEvents(
           toolCallId: evt.id,
           role: 'tool',
           content: detailed
-            ? truncateCot(evt.output ?? '', COT_TOOL_OUTPUT_MAX)
+            ? truncateCot(redactSensitiveText(evt.output ?? ''), COT_TOOL_OUTPUT_MAX)
             : brief
               ? cotBriefToolTitle(brief.name, brief.input, evt.isError ? 'error' : 'done')
               : '工具调用已完成',

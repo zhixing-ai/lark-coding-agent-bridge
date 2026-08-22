@@ -1,4 +1,5 @@
 import { deepMaskEmails } from './mask-email';
+import { userFacingAgentFailure } from './public-error';
 import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 
@@ -42,7 +43,7 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
     const mins = state.idleTimeoutMinutes ?? 0;
     elements.push(noteMd(`_⏱ ${mins} 分钟无响应,已自动终止_`));
   } else if (state.terminal === 'error' && state.errorMsg) {
-    elements.push(noteMd(`⚠️ agent 失败：${state.errorMsg}`));
+    elements.push(noteMd(`⚠️ ${userFacingAgentFailure(state.errorMsg)}`));
   } else if (state.terminal === 'done' && elements.length === 0) {
     elements.push(noteMd('_（未返回内容）_'));
   }

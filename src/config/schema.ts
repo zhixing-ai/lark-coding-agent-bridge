@@ -68,6 +68,16 @@ export interface SecretsConfig {
  */
 export type MessageReplyMode = 'card' | 'markdown' | 'text';
 export type CotMessagesMode = 'off' | 'brief' | 'detailed';
+export type ToolCardsMode = 'off' | 'full';
+
+export interface ToolCardsPreferences {
+  /** Tool-card visibility in direct messages. Default `full`. */
+  p2p?: ToolCardsMode;
+  /** Tool-card visibility in group and topic chats. Default `off`. */
+  group?: ToolCardsMode;
+  /** Group chat IDs that keep full tool visibility even when `group` is off. */
+  allowChats?: string[];
+}
 
 /**
  * Access control settings. Empty lists are fail-closed in the v2 policy:
@@ -107,6 +117,8 @@ export interface AppPreferences {
    * text answer and want to hide the "工具调用过程".
    */
   showToolCalls?: boolean;
+  /** Per-conversation tool visibility. Groups are private-by-default. */
+  toolCards?: ToolCardsPreferences;
   /**
    * Model the underlying agent runs with, forwarded as `--model`. The catalog
    * of valid values is agent-kind specific — see `agent/models.ts`. `undefined`
@@ -217,6 +229,30 @@ export function getMessageReplyMode(cfg: AppConfig): MessageReplyMode {
 /** Resolve the show-tool-calls preference with default fallback. */
 export function getShowToolCalls(cfg: AppConfig): boolean {
   return cfg.preferences?.showToolCalls !== false;
+}
+
+/** Resolve tool-card visibility for one conversation. */
+export function shouldShowToolCards(
+  cfg: AppConfig,
+  chatType: 'p2p' | 'group',
+  chatId: string,
+): boolean {
+  // Preserve the legacy global kill switch as the highest-priority control.
+  if (!getShowToolCalls(cfg)) return false;
+
+  const toolCards = cfg.preferences?.toolCards;
+  if (
+    chatType === 'group' &&
+    Array.isArray(toolCards?.allowChats) &&
+    toolCards.allowChats.includes(chatId)
+  ) {
+    return true;
+  }
+
+  const configured = chatType === 'p2p' ? toolCards?.p2p : toolCards?.group;
+  if (configured === 'full') return true;
+  if (configured === 'off') return false;
+  return chatType === 'p2p';
 }
 
 export function getCotMessages(cfg: AppConfig): CotMessagesMode {

@@ -171,6 +171,21 @@ DMs do not require an @ mention. Groups and topic groups require `@bot` by defau
 
 When COT is enabled, the bridge splits the process view and final answer into two messages. The COT message is for tracing what the agent did; the final answer is still generated from the agent's raw text, without heuristic bridge-side filtering. If an agent emits final-answer text as ordinary stream text, that text can also appear in the COT process message.
 
+Tool cards are visible in DMs and hidden in group/topic chats by default. Override this under
+`profiles.<name>.preferences`, using raw group `chat_id` values for the allowlist:
+
+```json
+{
+  "toolCards": {
+    "p2p": "full",
+    "group": "off",
+    "allowChats": ["oc_xxxxxxxx"]
+  }
+}
+```
+
+The legacy `showToolCalls: false` setting remains a global kill switch and takes precedence.
+
 ## lark-cli identity policy
 
 Each profile uses a profile-local lark-cli directory at `~/.lark-channel/profiles/<profile>/lark-cli`. The agent process receives `LARKSUITE_CLI_CONFIG_DIR` for that directory, so personal authorization in one profile is not shared with another profile.

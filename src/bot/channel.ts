@@ -27,7 +27,7 @@ import {
   reduce,
   type RunState,
 } from '../card/run-state';
-import { renderText } from '../card/text-renderer';
+import { renderText, richTextMarkdownError } from '../card/text-renderer';
 import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import {
@@ -36,7 +36,7 @@ import {
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRunIdleTimeoutMs,
-  getShowToolCalls,
+  shouldShowToolCards,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, reportMetric, withTrace } from '../core/logger';
@@ -1043,13 +1043,21 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const replyMode = getMessageReplyMode(controls.cfg);
   log.info('flush', 'reply-mode', { mode: replyMode });
   const cotMessages = getCotMessages(controls.cfg);
-  const cotEnabled = cotMessages !== 'off';
+  const toolCardsVisible = (): boolean =>
+    shouldShowToolCards(controls.cfg, firstMsg.chatType, chatId);
+  const cotEnabled = cotMessages !== 'off' && toolCardsVisible();
 
   // Re-read prefs on every flush so toggling /config mid-stream takes
   // effect immediately. Cheap object lookups, no allocation when on.
   const filterForPrefs = (state: RunState): RunState => {
-    if (getShowToolCalls(controls.cfg)) return state;
-    return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
+    if (toolCardsVisible()) return state;
+    return {
+      ...state,
+      blocks: state.blocks.filter((b) => b.kind !== 'tool'),
+      ...(firstMsg.chatType === 'group'
+        ? { reasoning: { content: '', active: false } }
+        : {}),
+    };
   };
   const cardRenderOptions = callbackAuth
     ? {
@@ -1206,7 +1214,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
               producerStarted = true;
               if (progress.abandoned()) return;
               markdownCtrl = ctrl;
-              await ctrl.setContent(renderText(filterForPrefs(latestState)));
+              const body = renderText(filterForPrefs(latestState));
+              if (allowRichTextMarkdown(body, scope, 'markdown-stream-initial')) {
+                await ctrl.setContent(body);
+              }
               await renderDone;
             },
           },
@@ -1223,7 +1234,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           latestState = state;
           if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
           if (markdownCtrl) {
-            await markdownCtrl.setContent(renderText(filterForPrefs(state)));
+            const body = renderText(filterForPrefs(state));
+            if (allowRichTextMarkdown(body, scope, 'markdown-stream-update')) {
+              await markdownCtrl.setContent(body);
+            }
           }
         },
       );
@@ -1236,7 +1250,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           fallback: async (state) => {
             if (controls.profileConfig.agentKind === 'codex') return;
             const body = renderText(filterForPrefs(state));
-            if (body.trim()) {
+            if (body.trim() && allowRichTextMarkdown(body, scope, 'markdown-fallback')) {
               await channel.send(chatId, { markdown: body }, sendOpts);
             }
           },
@@ -1283,11 +1297,22 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       });
     }
   } catch (err) {
+    if (isWithdrawnReplyTargetError(err)) {
+      log.info('outbound', 'reply-target-withdrawn', {
+        scope,
+        messageId: lastMsg.messageId,
+      });
+      return;
+    }
     log.fail('stream', err);
   } finally {
     activePolicyFingerprints.delete(scope);
     scheduleWorkingReactionCleanup(channel, lastMsg.messageId, reactionPromise);
   }
+}
+
+function isWithdrawnReplyTargetError(err: unknown): boolean {
+  return String(err).toLowerCase().includes('message was withdrawn');
 }
 
 interface LazyProgressStream {
@@ -1363,7 +1388,8 @@ function createLazyProgressStream(
  */
 function shouldOpenProgressStream(state: RunState): boolean {
   if (state.terminal !== 'running') return false;
-  return renderText({ ...state, footer: null }).trim() !== '';
+  const body = renderText({ ...state, footer: null });
+  return body.trim() !== '' && richTextMarkdownError(body) === undefined;
 }
 
 /**
@@ -1469,7 +1495,7 @@ async function sendFinalReply(input: {
     requireMessageReceipt(result, 'card');
     log.info('outbound', 'sent', outboundLogFields(input, 'card', body, result));
   } else if (input.replyMode === 'markdown') {
-    if (body.trim()) {
+    if (body.trim() && allowRichTextMarkdown(body, input.scope, 'markdown-final')) {
       const result = await input.channel.send(
         input.chatId,
         { markdown: body },
@@ -1478,7 +1504,7 @@ async function sendFinalReply(input: {
       requireMessageReceipt(result, 'markdown');
       log.info('outbound', 'sent', outboundLogFields(input, 'markdown', body, result));
     }
-  } else if (body.trim()) {
+  } else if (body.trim() && allowRichTextMarkdown(body, input.scope, 'text-final')) {
     const result = await input.channel.send(
       input.chatId,
       { markdown: body },
@@ -1487,6 +1513,17 @@ async function sendFinalReply(input: {
     requireMessageReceipt(result, 'text');
     log.info('outbound', 'sent', outboundLogFields(input, 'text', body, result));
   }
+}
+
+function allowRichTextMarkdown(body: string, scope: string, step: string): boolean {
+  const reason = richTextMarkdownError(body);
+  if (!reason) return true;
+  log.fail('outbound', new Error(`invalid rich text markdown: ${reason}`), {
+    scope,
+    step,
+    chars: body.length,
+  });
+  return false;
 }
 
 function requireMessageReceipt(result: { messageId?: string }, type: string): void {

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from '../../../src/agent/types.js';
 import type { FakeAgentEvents } from '../../helpers/fake-agent.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
+import type { AppConfig } from '../../../src/config/schema.js';
 import { log } from '../../../src/core/logger.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
@@ -294,6 +295,119 @@ describe('markdown stream startup failures', () => {
     expect(h.channel.sent).toHaveLength(0);
   });
 
+  it('streams Claude replies in group chats instead of sending a markdown post fallback', async () => {
+    const visibleProgress: string[] = [];
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [
+        { type: 'text', delta: 'GROUP_REPLY_SENTINEL' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({
+          setContent: vi.fn(async (markdown: string) => {
+            visibleProgress.push(markdown);
+          }),
+        });
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_group', 'run', 'group'));
+    await waitFor(() => visibleProgress.some((markdown) => markdown.includes('GROUP_REPLY_SENTINEL')));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(h.channel.sent).toHaveLength(0);
+  });
+
+  it('hides tool progress in groups by default while keeping final text', async () => {
+    const visibleProgress: string[] = [];
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [
+        {
+          type: 'tool_use',
+          id: 'tool-secret',
+          name: 'Bash',
+          input: { command: 'lark-cli base +field-list --base-token SECRET_VALUE' },
+        },
+        { type: 'tool_result', id: 'tool-secret', output: '/home/yunlian/private', isError: false },
+        { type: 'text', delta: 'FINAL_GROUP_ANSWER' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: collectMarkdown(visibleProgress),
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_group_tools', 'run', 'group'));
+    await waitFor(() => visibleProgress.some((markdown) => markdown.includes('FINAL_GROUP_ANSWER')));
+
+    expect(visibleProgress.join('\n')).not.toMatch(/Bash|SECRET_VALUE|yunlian/);
+  });
+
+  it('keeps redacted tool progress in p2p and allowlisted groups', async () => {
+    for (const chatType of ['p2p', 'group'] as const) {
+      const visibleProgress: string[] = [];
+      const h = await createHarness({
+        agentKind: 'claude',
+        preferences: {
+          toolCards: { p2p: 'full', group: 'off', allowChats: ['oc_dm'] },
+        },
+        events: [
+          {
+            type: 'tool_use',
+            id: `tool-${chatType}`,
+            name: 'Bash',
+            input: { command: 'run --app-secret SECRET_VALUE /home/yunlian/private' },
+          },
+          { type: 'text', delta: `FINAL_${chatType}` },
+          { type: 'done', terminationReason: 'normal' },
+        ],
+        stream: collectMarkdown(visibleProgress),
+      });
+      await startTestBridge(h);
+
+      await h.channel.handlers.message?.(message(`om_${chatType}_tools`, 'run', chatType));
+      await waitFor(() => visibleProgress.some((markdown) => markdown.includes(`FINAL_${chatType}`)));
+
+      const rendered = visibleProgress.join('\n');
+      expect(rendered).toContain('Bash');
+      expect(rendered).toContain('--app-secret ****');
+      expect(rendered).toContain('~/private');
+      expect(rendered).not.toMatch(/SECRET_VALUE|yunlian/);
+    }
+  });
+
+  it('does not create or send invalid rich text', async () => {
+    const streamCalls: unknown[] = [];
+    const fail = vi.spyOn(log, 'fail').mockImplementation(() => {});
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [
+        { type: 'text', delta: '[Invalid rich text JSON]' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async (_chatId, input) => {
+        streamCalls.push(input);
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_invalid_rich_text', 'run', 'group'));
+    await waitFor(() =>
+      fail.mock.calls.some((call) =>
+        call[0] === 'outbound' &&
+        (call[2] as { step?: string } | undefined)?.step === 'markdown-fallback',
+      ),
+    );
+
+    expect(streamCalls).toHaveLength(0);
+    expect(h.channel.sent).toHaveLength(0);
+  });
+
   it('renders nothing in a progress stream it already gave up on', async () => {
     // If the stream is still not producing after the grace window we do reply
     // without it — but the stream must then stay empty, or the answer shows up
@@ -357,6 +471,40 @@ describe('markdown stream startup failures', () => {
           (call[2] as { step?: string } | undefined)?.step === 'progress-stream',
       ),
     ).toBe(true);
+  });
+
+  it('treats a withdrawn reply target as cancellation instead of a stream failure', async () => {
+    const fail = vi.spyOn(log, 'fail').mockImplementation(() => {});
+    const info = vi.spyOn(log, 'info').mockImplementation(() => {});
+    const h = await createHarness({
+      agentKind: 'claude',
+      events: [
+        { type: 'text', delta: 'reply for a message that was withdrawn' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({ setContent: vi.fn(async () => {}) });
+        throw new Error('The message was withdrawn.');
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_withdrawn', 'run'));
+    await waitFor(() =>
+      info.mock.calls.some(
+        (call) => call[0] === 'outbound' && call[1] === 'reply-target-withdrawn',
+      ),
+    );
+
+    expect(
+      fail.mock.calls.some(
+        (call) => call[0] === 'stream' && String(call[1]).includes('message was withdrawn'),
+      ),
+    ).toBe(false);
+    expect(h.channel.sent).toHaveLength(0);
   });
 
   it('does not record delivery when the final send has no message receipt', async () => {
@@ -436,6 +584,7 @@ async function createHarness(options: {
   /** One run's events, or one array per run. */
   events?: FakeAgentEvents;
   messageReply?: 'card' | 'markdown' | 'text';
+  preferences?: AppConfig['preferences'];
   /** Codex holds its answer back for a dedicated final reply; Claude streams it. */
   agentKind?: 'claude' | 'codex';
 } = {}): Promise<{
@@ -460,11 +609,15 @@ async function createHarness(options: {
     },
     access: {
       allowedUsers: ['ou_user'],
+      allowedChats: ['oc_dm'],
     },
     codex: {
       binaryPath: '/usr/local/bin/codex',
     },
-    ...(options.messageReply ? { preferences: { messageReply: options.messageReply } } : {}),
+    preferences: {
+      ...(options.preferences ?? {}),
+      ...(options.messageReply ? { messageReply: options.messageReply } : {}),
+    },
   });
   const profileConfig = {
     ...baseProfileConfig,
@@ -607,6 +760,19 @@ function deferred<T>(): {
   return { promise, resolve, reject };
 }
 
+function collectMarkdown(visible: string[]): StreamFn {
+  return async (_chatId, input) => {
+    const producer = (input as {
+      markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+    }).markdown;
+    await producer?.({
+      setContent: vi.fn(async (markdown: string) => {
+        visible.push(markdown);
+      }),
+    });
+  };
+}
+
 function createControls(profileConfig: ReturnType<typeof createDefaultProfileConfig>) {
   return {
     profile: 'codex',
@@ -621,17 +787,21 @@ function createControls(profileConfig: ReturnType<typeof createDefaultProfileCon
   };
 }
 
-function message(messageId: string, content: string): NormalizedMessage {
+function message(
+  messageId: string,
+  content: string,
+  chatType: 'p2p' | 'group' = 'p2p',
+): NormalizedMessage {
   return {
     messageId,
     chatId: 'oc_dm',
-    chatType: 'p2p',
+    chatType,
     senderId: 'ou_user',
     senderName: 'User',
     content,
     rawContentType: 'text',
     resources: [],
-    mentionedBot: false,
+    mentionedBot: chatType === 'group',
     createTime: 1760000001000,
   } as unknown as NormalizedMessage;
 }
