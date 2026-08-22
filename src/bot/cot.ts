@@ -1,6 +1,7 @@
 import type { AgentEvent } from '../agent/types';
 import type { CotMessagesMode, TenantBrand } from '../config/schema';
 import { log } from '../core/logger';
+import { userFacingAgentFailure } from '../card/public-error';
 import { toolHeaderText } from '../card/tool-render';
 import { redactSensitiveText } from '../card/redact-sensitive';
 import type { RunState } from '../card/run-state';
@@ -364,7 +365,10 @@ export async function consumeCotEvents(
           });
         }
         if (evt.type === 'error') {
-          publisher.enqueue('RUN_ERROR', { message: evt.message, code: evt.terminationReason ?? 'error' });
+          publisher.enqueue('RUN_ERROR', {
+            message: userFacingAgentFailure(evt.message),
+            code: evt.terminationReason ?? 'error',
+          });
           await publisher.finish('error');
         } else {
           const status = evt.terminationReason === 'normal' ? 'done' : evt.terminationReason ?? 'done';

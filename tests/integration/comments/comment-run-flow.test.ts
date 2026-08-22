@@ -167,6 +167,23 @@ describe('comment run flow', () => {
     expect(h.inThreadReplies).toEqual(['answer one']);
   });
 
+  it('hides provider details from comment error replies', async () => {
+    const h = await createHarness({
+      agentEventRuns: [[
+        {
+          type: 'error',
+          message: 'Kimi Coding Plan broker request failed: TimeoutError',
+          terminationReason: 'failed',
+        },
+      ]],
+    });
+
+    await handleCommentMention(h.deps(event({ commentId: 'comment-1', replyId: 'reply-1' })));
+
+    expect(h.inThreadReplies).toEqual(['⚠️ 服务暂时不可用，请重新发送消息重试。']);
+    expect(h.inThreadReplies[0]).not.toMatch(/kimi|broker|timeout/i);
+  });
+
   it('falls back to the default cwd when the document cwd is stale', async () => {
     const h = await createHarness();
     h.workspaces.setCwd(docSessionScope('doc-token'), join(h.tmp.profile, 'missing-workspace'));

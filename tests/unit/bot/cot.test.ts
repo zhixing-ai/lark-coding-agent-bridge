@@ -65,6 +65,32 @@ describe('COT event mapping', () => {
     expect(JSON.parse(result?.content ?? '{}').content).toBe('workspace');
   });
 
+  it('hides provider details from COT errors', async () => {
+    const client = new FakeCotClient();
+    const publisher = new CotPublisher({
+      client,
+      chatId: 'oc_chat',
+      originMessageId: 'om_origin',
+      runId: 'run-provider-error',
+      scope: 'oc_chat',
+      inputPreview: 'run',
+    });
+    await publisher.start();
+
+    await consumeCotEvents(iterate([
+      {
+        type: 'error',
+        message: 'claude exited with code 75: Kimi Coding Plan broker request failed',
+        terminationReason: 'failed',
+      },
+    ]), publisher, { detail: 'brief' });
+
+    const error = client.events.find((event) => event.event_type === 'RUN_ERROR');
+    const message = JSON.parse(error?.content ?? '{}').message;
+    expect(message).toBe('服务暂时不可用，请重新发送消息重试。');
+    expect(message).not.toMatch(/kimi|broker|code 75/i);
+  });
+
   it('derives final answer state from text blocks only', () => {
     const state: RunState = {
       blocks: [
