@@ -171,6 +171,21 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 
 开启 COT 后，bridge 会把过程消息和最终答案拆成两条消息。过程消息用于追踪 agent 做了什么；最终答案仍由 agent 原始文本生成，bridge 不做启发式过滤。若 agent 把最终答案也作为普通流式文本输出，COT 过程消息中可能会出现对应片段。
 
+工具卡默认只在私聊展示，群聊和话题群只展示回复文本。可在
+`profiles.<name>.preferences` 中覆盖，并用原始群 `chat_id` 配置白名单：
+
+```json
+{
+  "toolCards": {
+    "p2p": "full",
+    "group": "off",
+    "allowChats": ["oc_xxxxxxxx"]
+  }
+}
+```
+
+旧配置 `showToolCalls: false` 仍作为全局关闭开关，优先级高于 `toolCards`。
+
 ## lark-cli 身份策略
 
 每个 profile 都使用当前 profile 的 lark-cli 目录：`~/.lark-channel/profiles/<profile>/lark-cli`。agent 子进程会收到指向这个目录的 `LARKSUITE_CLI_CONFIG_DIR`，所以一个 profile 里的个人授权不会共享给另一个 profile。

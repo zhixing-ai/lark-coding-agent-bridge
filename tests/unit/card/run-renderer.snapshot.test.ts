@@ -100,7 +100,7 @@ describe('run card renderer snapshots', () => {
     });
   });
 
-  it('keeps local paths in user-visible cards and text fallbacks', () => {
+  it('redacts local paths in tool details without rewriting final answer text', () => {
     const sensitivePath = '/Users/example/private/customer/repo/secret.txt';
     const state = stateFrom([
       { type: 'text', delta: `I read ${sensitivePath}` },
@@ -111,8 +111,10 @@ describe('run card renderer snapshots', () => {
 
     const card = JSON.stringify(renderCard(state));
     const text = renderText(state);
-    expect(card).toContain(sensitivePath);
-    expect(text).toContain(sensitivePath);
+    expect(card).toContain(`I read ${sensitivePath}`);
+    expect(card).toContain('~/private/customer/repo/secret.txt');
+    expect(text).toContain(`I read ${sensitivePath}`);
+    expect(text).toContain('~/private/customer/repo/secret.txt');
   });
 });
 

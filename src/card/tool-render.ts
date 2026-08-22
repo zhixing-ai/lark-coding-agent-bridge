@@ -1,4 +1,5 @@
 import type { ToolEntry } from './run-state';
+import { redactSensitiveText } from './redact-sensitive';
 
 const HEADER_SUMMARY_MAX = 80;
 const BODY_FIELD_MAX = 600;
@@ -24,7 +25,7 @@ export function toolBodyMd(tool: ToolEntry): string {
   if (inputMd) parts.push(inputMd);
 
   if (tool.output) {
-    const truncated = truncate(tool.output, OUTPUT_MAX);
+    const truncated = truncate(redactSensitiveText(tool.output), OUTPUT_MAX);
     if (tool.status === 'error') {
       parts.push(`**Error**\n\`\`\`\n${truncated}\n\`\`\``);
     } else if (tool.name === 'Bash') {
@@ -47,7 +48,7 @@ function summarizeInput(name: string, input: unknown): string {
   const pick = (key: string, max = HEADER_SUMMARY_MAX): string => {
     const v = rec[key];
     if (typeof v !== 'string') return '';
-    const oneLine = v.replace(/\s+/g, ' ').trim();
+    const oneLine = redactSensitiveText(v).replace(/\s+/g, ' ').trim();
     return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
   };
   switch (name) {
@@ -81,7 +82,8 @@ function renderInput(tool: ToolEntry): string {
   const input = tool.input;
   if (!input || typeof input !== 'object') return '';
   const rec = input as Record<string, unknown>;
-  const str = (k: string): string => (typeof rec[k] === 'string' ? rec[k] as string : '');
+  const str = (k: string): string =>
+    typeof rec[k] === 'string' ? redactSensitiveText(rec[k] as string) : '';
 
   switch (tool.name) {
     case 'Bash': {
