@@ -84,6 +84,40 @@ describe('logger redaction', () => {
     expect(text).not.toContain('escaped-token');
   });
 
+  it('logs circular SDK errors without interrupting message processing', async () => {
+    const request: Record<string, unknown> = {
+      headers: { authorization: 'Bearer circular-secret' },
+    };
+    request.response = { request };
+    const args: unknown[] = [request];
+    args.push(args);
+
+    expect(() => log.warn('sdk', 'error', { args })).not.toThrow();
+    await flushLogger();
+    const text = await readTodayLog();
+    expect(text).toContain('[Circular]');
+    expect(text).not.toContain('circular-secret');
+    expect(() => JSON.parse(text.trim())).not.toThrow();
+  });
+
+  it('bounds nested diagnostics while preserving shared sibling values', async () => {
+    const shared = { status: 'ok' };
+    const deep: Record<string, unknown> = {};
+    let cursor = deep;
+    for (let index = 0; index < 10000; index++) {
+      const next = {};
+      cursor.child = next;
+      cursor = next;
+    }
+
+    expect(() => log.warn('sdk', 'error', { deep, first: shared, second: shared })).not.toThrow();
+    await flushLogger();
+    const entry = JSON.parse((await readTodayLog()).trim());
+    expect(entry.first).toEqual(shared);
+    expect(entry.second).toEqual(shared);
+    expect(JSON.stringify(entry.deep)).toContain('[MaxDepth]');
+  });
+
   it('redacts Lark resource keys and attachment tags from arbitrary previews', async () => {
     log.info('intake', 'enter', {
       preview:

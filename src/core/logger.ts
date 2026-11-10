@@ -197,6 +197,7 @@ function sanitizeLogValue(
   key: string,
   value: unknown,
   options: SanitizeOptions = EXTERNAL_SANITIZE,
+  ancestors = new Set<object>(),
 ): unknown {
   const normalizedKey = key.startsWith('_') ? key.slice(1) : key;
   if (value === undefined) return undefined;
@@ -207,15 +208,24 @@ function sanitizeLogValue(
   }
   if (RESOURCE_ID_KEYS.has(normalizedKey)) return '[REDACTED_RESOURCE]';
   if (options.redactIds && ID_KEYS.has(normalizedKey)) return redactId(value);
-  if (Array.isArray(value)) {
-    return value.map((item) => sanitizeLogValue(key, item, options));
-  }
   if (value && typeof value === 'object') {
-    const nested: Record<string, unknown> = {};
-    for (const [nestedKey, nestedValue] of Object.entries(value)) {
-      nested[nestedKey] = sanitizeLogValue(nestedKey, nestedValue, options);
+    // SDK errors can contain request -> response -> request cycles. Logging
+    // must never throw and turn a recoverable API error into a failed run.
+    if (ancestors.has(value)) return '[Circular]';
+    if (ancestors.size >= 20) return '[MaxDepth]';
+    ancestors.add(value);
+    try {
+      if (Array.isArray(value)) {
+        return value.map((item) => sanitizeLogValue(key, item, options, ancestors));
+      }
+      const nested: Record<string, unknown> = {};
+      for (const [nestedKey, nestedValue] of Object.entries(value)) {
+        nested[nestedKey] = sanitizeLogValue(nestedKey, nestedValue, options, ancestors);
+      }
+      return nested;
+    } finally {
+      ancestors.delete(value);
     }
-    return nested;
   }
   if (typeof value === 'string') {
     const redacted = redactDiagnosticText(value);
